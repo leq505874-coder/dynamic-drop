@@ -1,4 +1,3 @@
-
 name: Build Android APK
 
 on:
@@ -12,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,10 +22,70 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Extract Android project source
+      - name: Extract Android project
         run: |
           test -f IslandDrop-source.zip
           unzip -o IslandDrop-source.zip -d .
+
+      - name: Fix Java and Kotlin compatibility
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          candidates = [
+              Path("app/build.gradle.kts"),
+              Path("app/build.gradle")
+          ]
+
+          gradle_file = next(
+              (p for p in candidates if p.is_file()),
+              None
+          )
+
+          if gradle_file is None:
+              print("Files found:")
+              for p in Path(".").glob("**/build.gradle*"):
+                  print(p)
+              raise SystemExit("Cannot find app/build.gradle(.kts)")
+
+          text = gradle_file.read_text()
+
+          if "compileOptions" not in text:
+              if gradle_file.suffix == ".kts":
+                  java_config = """
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          """
+              else:
+                  java_config = """
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          """
+              text = text.replace("android {", "android {\n" + java_config, 1)
+
+          if "kotlinOptions" not in text:
+              if gradle_file.suffix == ".kts":
+                  kotlin_config = """
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          """
+              else:
+                  kotlin_config = """
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          """
+              text = text.replace("android {", "android {\n" + kotlin_config, 1)
+
+          gradle_file.write_text(text)
+          print(f"Patched: {gradle_file}")
+          PY
 
       - name: Build debug APK
         run: |
@@ -33,11 +93,10 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug --stacktrace
 
-      - name: Upload APK artifact
+      - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: IslandDrop-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          
